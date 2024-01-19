@@ -1,7 +1,7 @@
-use rjson::Parser;
+use rjson::Parse;
 
 #[allow(dead_code)]
-#[derive(Debug, Parser)]
+#[derive(Debug, Parse)]
 pub struct Command {
     executable: String,
     args: Vec<String>,

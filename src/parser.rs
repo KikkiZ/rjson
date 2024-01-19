@@ -1,100 +1,99 @@
-#![allow(dead_code)]
-use std::iter::Map;
+use std::{fs::File, io::Read};
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Ident, TokenStream};
 use quote::quote;
-use syn::{
-    punctuated::{Iter, Punctuated},
-    token::Comma,
-    Data, DataStruct, DeriveInput, Field, Fields, FieldsNamed, Ident,
-};
+use serde_json::Value;
+use syn::{parse_str, ItemStruct};
 
-type TokenStreamIter<'a> = Map<Iter<'a, Field>, fn(&'a Field) -> TokenStream>;
-
+#[derive(Debug)]
 pub struct ParserContext {
-    name: Ident,
-    fields: Punctuated<Field, Comma>,
+    token: ItemStruct,
+    file: File,
 }
 
 impl ParserContext {
-    pub fn new(input: DeriveInput) -> Self {
-        let name = input.ident;
-
-        let fields = if let Data::Struct(DataStruct {
-            fields: Fields::Named(FieldsNamed { named, .. }),
-            ..
-        }) = input.data
-        {
-            named
-        } else {
-            panic!("unsupported data type")
-        };
+    pub fn new(input: ItemStruct, path: &String) -> Self {
+        let file = File::open(path).unwrap();
 
         Self {
-            name: name,
-            fields: fields,
+            token: input,
+            file: file,
         }
     }
 
-    pub fn generate(&self) -> TokenStream {
-        let name = &self.name;
-        let parser_name = Ident::new(&format!("{}Parser", name), name.span());
-        let optionized_fileds = self.gen_optionnized_fields();
-        let methods = self.gen_methods();
-        let assigns = self.gen_assigns();
+    pub fn generate(&mut self) -> TokenStream {
+        let visiable = &self.token.vis;
+
+        let name = &self.token.ident;
+        let struct_name = Ident::new(&format!("{}", name), name.span());
+        let fields = gen_fields(&mut self.file);
+
+        println!("{:#?}", fields);
 
         quote!(
-            #[derive(Debug, Default)]
-            struct #parser_name {
-                #(#optionized_fileds,)*
-            }
-
-            impl #parser_name {
-                #(#methods)*
-
-                pub fn finish(mut self) -> Result<#name, &'static str> {
-                    Ok(#name {
-                        #(#assigns,)*
-                    })
-                }
-            }
-
-            impl #name {
-                fn parser() -> #parser_name {
-                    Default::default()
-                }
+            #[derive(Debug)]
+            #visiable struct #struct_name {
+                #(pub #fields),*
             }
         )
     }
+}
 
-    fn gen_optionnized_fields(&self) -> TokenStreamIter {
-        self.fields.iter().map(|field| {
-            let ty = &field.ty;
-            let name = &field.ident;
-            quote!(#name: std::option::Option<#ty>)
-        })
+fn gen_fields(file: &mut File) -> Vec<TokenStream> {
+    let mut buffer = [0; 1024 * 64];
+    let len = file.read(&mut buffer).unwrap();
+    let json = std::str::from_utf8(&buffer[0..len]).unwrap();
+
+    let data: Value = serde_json::from_str(json).unwrap();
+    let obj = data.as_object().unwrap();
+
+    let mut fields: Vec<TokenStream> = Vec::new();
+    for key in obj.keys() {
+        let ident_key: Ident = parse_str(&key).unwrap();
+        let ident_type = type_match(&obj.get(key).unwrap());
+        fields.push(quote!(#ident_key: #ident_type));
     }
 
-    fn gen_methods(&self) -> TokenStreamIter {
-        self.fields.iter().map(|field| {
-            let ty = &field.ty;
-            let name = &field.ident;
-            quote!(
-                pub fn #name(mut self, v: impl Into<#ty>) -> Self {
-                    self.#name = Some(v.into());
-                    self
-                }
-            )
-        })
+    fields
+}
+
+fn type_match(v: &Value) -> TokenStream {
+    let ident;
+    if v.is_boolean() {
+        ident = quote!(bool);
+    } else if v.is_number() {
+        ident = quote!(usize);
+    } else if v.is_string() {
+        ident = quote!(String);
+    } else if v.is_array() {
+        let arr = v.as_array().unwrap();
+        if arr.len() > 0 {
+            // ident = parse_str(&format!("Vec<{}>", type_match(&arr[0]).to_string())).unwrap();
+            // ident = type_match(&arr[0]);
+            // println!("Vec<{}>", ident.to_string());
+            let ty = type_match(&arr[0]);
+            ident = quote!(Vec<#ty>);
+        } else {
+            panic!()
+        }
+    } else {
+        panic!()
     }
 
-    fn gen_assigns(&self) -> TokenStreamIter {
-        self.fields.iter().map(|field| {
-            // let ty = &field.ty;
-            let name = &field.ident;
-            quote!(
-                #name: self.#name.take().ok_or(concat!(stringify!(#name), " need to be set"))?
-            )
-        })
-    }
+    ident
+    // match v {
+    //     Bool => parse_str("bool").unwrap(),
+    //     Number => parse_str("usize").unwrap(),
+    //     String => parse_str("String").unwrap(),
+    //     Array => {
+    //         let arr = v.as_array().unwrap();
+    //         if arr.len() > 0 {
+    //             
+    //         } else {
+    //             panic!()
+    //         }
+    //     },
+    //     _ => panic!()
+    // }
+    // todo!()
 }
